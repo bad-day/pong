@@ -717,11 +717,11 @@ int main() {
 
             case 2:
 
-                if (keystate[SDLK_DOWN] || keystate[SDLK_w]) {
+                if (keystate[SDLK_DOWN] || keystate[SDLK_s]) {
                     move_paddle_r(0);
                 }
 
-                if (keystate[SDLK_UP] || keystate[SDLK_s]) {
+                if (keystate[SDLK_UP] || keystate[SDLK_w]) {
                     move_paddle_r(1);
                 }
 
