@@ -2,6 +2,14 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <SDL/SDL.h>
+#include <sys/socket.h>
+#include <unistd.h>
+#include <arpa/inet.h>
+#include <pthread.h>
+
+#define PORT 4551
+#define CLIENT argc == 2
+#define NOT_CLIENT argc == 1
 
 typedef struct ball_s {
 
@@ -20,12 +28,18 @@ typedef struct paddle {
 static ball_t ball;
 static paddle_t paddle[2];
 int score[] = {0,0};
+int score2[] = {0,0};
 
 //surfaces
 static SDL_Surface *screen;
 static SDL_Surface *numbermap;
 static SDL_Surface *title;
 static SDL_Surface *end;
+
+//multiplayer
+static char IP[20];
+static int client_sock, quit = 0, check_client = 0, check_server = 0;
+static struct sockaddr_in client_addr;
 
 //inisilise starting position and sizes of game elemements
 static void init_ball() {
@@ -540,9 +554,146 @@ static void draw_player_1_score() {
 	SDL_BlitSurface(numbermap, &src, screen, &dest);
 }
 
-int main() {
-	
+static void init_client_socket() {
+
+    /* Connect to server */
+    
+    client_sock = socket(AF_INET, SOCK_STREAM, 0);
+    if (client_sock < 0) {
+        perror("socket");
+        exit(1);
+    }
+
+    client_addr.sin_family = AF_INET;
+    client_addr.sin_port = htons(PORT);
+    client_addr.sin_addr.s_addr = inet_addr(IP);
+    if (connect(client_sock, (struct sockaddr *) &client_addr, sizeof(client_addr)) < 0) {
+        perror("connect");
+        exit(2);
+    }
+}
+
+void send_move_paddle() {
+
+    init_client_socket();
+
+    char message[2];
+    message[0] = '0';
+    send(client_sock, message, sizeof(message), 0);
+
+    send(client_sock, &paddle[1], sizeof(struct paddle), 0);
+
+    close(client_sock);
+}
+
+static void get_paddle() {
+
+    init_client_socket();
+
+    char message[2];
+    message[0] = '1';
+    send(client_sock, message, sizeof(message), 0);
+    recv(client_sock, &paddle[0], sizeof(struct paddle), 0);
+
+    close(client_sock);
+}
+
+static void get_ball() {
+
+    init_client_socket();
+
+    char message[2];
+    message[0] = '2';
+
+    send(client_sock, message, sizeof(message), 0);
+    recv(client_sock, &ball, sizeof(struct ball_s), 0);
+
+    close(client_sock);
+}
+
+static void get_score() {
+
+    init_client_socket();
+
+    char message[2];
+    message[0] = '3';
+
+    send(client_sock, message, sizeof(message), 0);
+    recv(client_sock, &score, sizeof(score), 0);
+
+    close(client_sock);
+}
+
+static void *thread_func() {
+
+    char buf[3];
+    int listener;
+    struct sockaddr_in server_addr;
+
+    listener = socket(AF_INET, SOCK_STREAM, 0);
+    if (listener < 0) {
+        perror("socket");
+        exit(1);
+    }
+
+    server_addr.sin_family = AF_INET;
+    server_addr.sin_port = htons(PORT);
+    server_addr.sin_addr.s_addr = htonl(INADDR_ANY);
+    if (bind(listener, (struct sockaddr *) &server_addr, sizeof(server_addr)) < 0) {
+        perror("bind");
+        exit(2);
+    }
+
+    listen(listener, 2);
+
+    while (!quit) {
+
+        int socket;
+        char buf[3];
+
+        socket = accept(listener, NULL, NULL);
+
+        if (socket < 0) {
+            perror("accept");
+            exit(3);
+        }
+
+        check_client = 1;
+
+        recv(socket, buf, 2, 0);
+
+
+        if (buf[0] == '0') { // set paddle position
+
+            recv(socket, &paddle[1], sizeof(struct paddle), 0);
+        } else if (buf[0] == '1') { // send paddle position
+
+            send(socket, &paddle[0], sizeof(struct paddle), 0);
+        } else if (buf[0] == '2') { // send ball position
+
+            send(socket, &ball, sizeof(struct ball_s), 0);
+        } else if (buf[0] == '3') { // send score
+
+            send(socket, &score, sizeof(score), 0);
+        }
+
+        close(socket);
+    }
+
+}
+
+int main(int argc, char *argv[]) {
+
+    pthread_t thread;
 	SDL_Surface *temp;
+
+    if (CLIENT) {
+
+        strcpy(IP, argv[1]);
+    } else {
+
+        strcpy(IP, "127.0.0.1");
+    }
 
 	/* Initialize SDL’s video system and check for errors */
 	if (SDL_Init(SDL_INIT_VIDEO) != 0) {
@@ -633,7 +784,6 @@ int main() {
 	/* Initialize the ball position data. */
 	init_ball();
 
-	int quit = 0;
 	int state = 0;
 	int game_mode;
 	Uint8 *keystate = 0;
@@ -805,6 +955,82 @@ int main() {
                 //draw the score
                 draw_player_1_score();
                 break;
+
+            case 4:
+
+                if (check_server == 0 && NOT_CLIENT) {
+                    check_server = 1;
+
+                    pthread_create(&thread, NULL, thread_func, NULL); // start socket server
+                }
+
+                if (keystate[SDLK_s]) {
+                    if (CLIENT) {
+
+                        move_paddle_r(0);
+                    } else {
+
+                        move_paddle_l(0);
+                    }
+                }
+
+                if (keystate[SDLK_w]) {
+                    if (CLIENT) {
+
+                        move_paddle_r(1);
+                    } else {
+
+                        move_paddle_l(1);
+                    }
+                }
+
+                if (CLIENT) {
+
+                    get_paddle();
+                    send_move_paddle();
+                    get_ball();
+
+                    score2[0] = score[0];
+                    score2[1] = score[1];
+                    get_score();
+
+                    if(score2[0] != score[0] ||  score2[1] != score[1]) {
+                        init_ball();
+                    }
+                }
+
+                if (NOT_CLIENT && check_client) { // if client connect, draw ball
+                    move_ball();
+                }
+
+                r = check_score();
+
+                if (r == 1) {
+
+                    state = 1;
+
+                } else if (r == 2) {
+
+                    state = 1;
+                }
+
+                //draw net
+                draw_net();
+
+                //draw paddles
+                draw_paddle();
+
+                /* Put the ball on the screen. */
+                draw_ball();
+
+                //draw the score
+                draw_player_0_score();
+
+                //draw the score
+                draw_player_1_score();
+
+                break;
+
         }
 
 		/* Ask SDL to update the entire screen. */
